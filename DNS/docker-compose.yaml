@@ -9,6 +9,9 @@ services:
       - "53:53/udp"
       # - "67:67/udp" # Only required if you are using Pi-hole as your DHCP server
       - "8080:80/tcp"
+    dns:
+      - 127.0.0.1  # Look at itself first
+      - 1.1.1.1    # Use Cloudflare if the Pi-hole service is still starting up 
     environment:
       TZ: 'Europe/Warsaw'
       FTLCONF_webserver_api_password: ${PIHOLE_WEBPASSWORD}
