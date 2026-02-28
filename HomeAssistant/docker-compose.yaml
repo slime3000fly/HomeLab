@@ -8,6 +8,8 @@ services:
     volumes:
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
       - ./certs:/etc/nginx/certs:ro
+    networks:
+      - ha_net
   homeassistant:
     container_name: homeassistant
     image: ghcr.io/home-assistant/home-assistant:stable
@@ -19,3 +21,12 @@ services:
     privileged: true
     environment:
       TZ: Europe/Warsaw
+    networks:
+      - ha_net
+
+networks:
+  ha_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
