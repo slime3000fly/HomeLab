@@ -1,0 +1,110 @@
+---
+- name: Dynamic credential retrieval and system update
+  hosts: linux_servers linux_desktop
+  gather_facts: no 
+  
+  vars:
+    # Download data from Bitwarden
+    bw_data: "{{ lookup('community.general.bitwarden', inventory_hostname) }}"
+    
+    ansible_user: "{{ bw_data[0].login.username }}"
+    ansible_password: "{{ bw_data[0].login.password }}"
+    ansible_become_password: "{{ bw_data[0].login.password }}"
+
+    ansible_become_method: sudo
+    ansible_become_flags: '--stdin -H -S'
+    ansible_pty: yes
+
+  tasks:
+    - name: Gather system facts
+      ansible.builtin.setup:
+
+    # --- IPV 6 ---
+    - name: Disable IPv6 if enabled
+      become: yes
+      block:
+        - name: Check if IPv6 proc entry exists
+          ansible.builtin.stat:
+            path: /proc/sys/net/ipv6/conf/all/disable_ipv6
+          register: ipv6_proc
+
+        - name: Disable IPv6 via sysctl 
+          ansible.posix.sysctl:
+            name: "{{ item }}"
+            value: '1'
+            sysctl_set: yes
+            state: present
+            reload: yes
+          loop:
+            - net.ipv6.conf.all.disable_ipv6
+            - net.ipv6.conf.default.disable_ipv6
+            - net.ipv6.conf.lo.disable_ipv6
+          when: ipv6_proc.stat.exists
+
+        - name: Check current GRUB parameters
+          ansible.builtin.shell: grep -o 'ipv6.disable=[^ ]*' /etc/default/grub || true
+          register: grub_ipv6
+          changed_when: false
+          ignore_errors: yes
+
+        - name: Add ipv6.disable=1 to GRUB (Debian/Ubuntu)
+          ansible.builtin.lineinfile:
+            path: /etc/default/grub
+            regexp: '^GRUB_CMDLINE_LINUX_DEFAULT='
+            line: 'GRUB_CMDLINE_LINUX_DEFAULT="quiet ipv6.disable=1"'
+            backup: yes
+          when: 
+            - ansible_os_family == "Debian"
+            - "'ipv6.disable=1' not in grub_ipv6.stdout"
+          notify: update grub debian
+
+
+    - name: Display IPv6 status
+      ansible.builtin.debug:
+        msg: "IPv6 has been disabled on {{ inventory_hostname }}. A reboot is required for GRUB changes to take full effect."
+
+    - name: upgrade Debian/Ubuntu
+      ansible.builtin.apt:
+        update_cache: yes
+        upgrade: dist
+      when: ansible_os_family == "Debian"
+      become: yes
+
+    # --- REBOOT ---
+
+    - name: Check if reboot needed
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required_file
+      when: ansible_os_family == "Debian" 
+
+    - name: Show reboot status
+      ansible.builtin.debug:
+        msg: |
+          {% if reboot_required_file.stat.exists %}
+          [REBOOT REQUIRED] {{ inventory_hostname }} — kernel or libs updated
+          {% else %}
+          [OK] {{ inventory_hostname }} — no reboot needed
+          {% endif %}
+
+    - name: Check if graphical interface is present
+      ansible.builtin.shell: "command -v Xorg || command -v wayland-session"
+      register: check_x11
+      failed_when: false
+      changed_when: false
+
+    - name: Reboot if need
+      ansible.builtin.reboot:
+        msg: "Reboot if need (kernel)"
+        reboot_timeout: 300
+      become: yes
+      when: 
+        - reboot_required_file.stat.exists is defined and reboot_required_file.stat.exists
+        - check_x11.rc != 0                                  
+        - "'linux_desktop' not in group_names"             
+
+  handlers:
+    - name: update grub debian
+      ansible.builtin.command: update-grub
+      become: yes          
+      when: ansible_os_family == "Debian"  
